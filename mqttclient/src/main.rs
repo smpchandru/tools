@@ -43,7 +43,7 @@ struct Request {
     /// publish topic name. REQUIRED
     #[structopt(long)]
     pub_topic: String,
-    /// subscribe topic name. REQUIRED
+    /// response topic name to use. REQUIRED
     #[structopt(long)]
     resp_topic: String,
     /// correlation data. REQUIRED
@@ -63,7 +63,7 @@ struct Request {
 }
 #[derive(Clone, Debug, StructOpt)]
 struct Respond {
-    /// publish topic name. REQUIRED
+    /// name of topic to wait for messages to respond. REQUIRED
     #[structopt(long)]
     topic: String,
     /// Qos value to be used for sub/pub
@@ -78,9 +78,9 @@ enum Command {
     Pub(Publish),
     /// Subscribe for messages from broker
     Sub(Subscribe),
-    /// Subscribe and Publish on message
+    /// Send request and wait for response
     Request(Request),
-    /// Publish and then Subscribe for reponse
+    /// Respond to message using response topic from message
     Respond(Respond),
 }
 #[derive(StructOpt, Clone, Debug)]
@@ -325,9 +325,9 @@ async fn sub_msgs(args: Args, sub_args: Subscribe) {
             .unwrap();
         println!("Subscribed waiting for messages");
         while let Some(msg) = strm.recv().await.unwrap() {
-                println!(
+            println!(
                 "Topic : {} ,  Msg:{:?}, Correlation id {:?}",
-                    sub_args.topic.join(","),
+                sub_args.topic.join(","),
                 String::from_utf8(msg.payload().to_owned()).unwrap(),
                 String::from_utf8(
                     msg.properties()
@@ -335,7 +335,7 @@ async fn sub_msgs(args: Args, sub_args: Subscribe) {
                         .unwrap()
                 )
                 .unwrap()
-                );
+            );
         }
     })
     .await
