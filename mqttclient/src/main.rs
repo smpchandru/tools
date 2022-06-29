@@ -119,16 +119,6 @@ struct Args {
     pass: Option<String>,
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::from_args();
-    match args.cmd {
-        Command::Pub(ref pub_args) => pub_msgs(args.clone(), pub_args.clone()).await,
-        Command::Sub(ref sub_args) => sub_msgs(args.clone(), sub_args.clone()).await,
-        Command::Request(ref req_args) => request(args.clone(), req_args.clone()).await,
-        Command::Respond(ref resp_args) => respond(args.clone(), resp_args.clone()).await,
-    }
-}
 async fn respond(args: Args, respond_args: Respond) {
     let mut cli = client_from_args(args.clone());
     println!("Connecting to mqtt host {}", args.host);
@@ -148,21 +138,22 @@ async fn respond(args: Args, respond_args: Respond) {
         let _ = tokio::spawn(async move {
             let resp_msg: mqtt::Message;
             if let Some(msg) = msg {
-                println!("received message {}", msg.topic());
+                println!("Received message {}", msg.topic());
                 resp_msg = msg;
             } else {
-                println!("received None");
+                println!("Received None");
                 return;
             }
+            let corr_data = String::from_utf8(
+                resp_msg
+                    .properties()
+                    .get_binary(mqtt::PropertyCode::CorrelationData)
+                    .unwrap(),
+            )
+            .unwrap();
             println!(
-                "Got message, with corr data {:?} Responding",
-                String::from_utf8(
-                    resp_msg
-                        .properties()
-                        .get_binary(mqtt::PropertyCode::CorrelationData)
-                        .unwrap()
-                )
-                .unwrap()
+                "Got message, with correlation data {} Responding",
+                corr_data
             );
 
             let reps_topic = resp_msg
@@ -179,11 +170,13 @@ async fn respond(args: Args, respond_args: Respond) {
         )
         .payload(resp_msg.payload())
         .finalize();
-            println!("Responding message to topic {}", reps_topic);
             if let Err(e) = cli.publish(msg).await {
-                eprintln!("respond error {}", e)
+                eprintln!("Respond error {}", e)
             }
-            println!("Responded successfully");
+            println!(
+                "Successfully responding message to topic [{}] with correlation data[{}]",
+                reps_topic, corr_data
+            );
         });
     }
     cli.unsubscribe(respond_args.topic.clone()).await.unwrap();
@@ -195,7 +188,7 @@ async fn request(args: Args, req_args: Request) {
     println!("Connected");
     let mut cli2 = cli.clone();
     let (sub_tx, mut sub_rx) = tokio::sync::mpsc::channel(1);
-    // let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(1);
+    let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
     let req_args2 = req_args.clone();
 
     let sub_task = tokio::spawn(async move {
@@ -209,24 +202,14 @@ async fn request(args: Args, req_args: Request) {
         match strm.recv().await {
             Ok(msg) => {
                 if let Some(msg) = msg {
-                    println!(
-                        "Received response {}, content {:?},correlation id [{}]",
-                        msg.topic(),
-                        String::from_utf8(msg.payload().to_owned()).unwrap(),
-                        String::from_utf8(
-                            msg.properties()
-                                .get_binary(mqtt::PropertyCode::CorrelationData)
-                                .unwrap()
-                        )
-                        .unwrap()
-                    );
+                    resp_tx.send(msg).await.unwrap();
                 } else {
                     println!("Received None response");
                 }
             }
             Err(e) => eprintln!("Error while getting message from broker, {}", e),
         }
-        sub_tx.send(true).await.unwrap();
+        // sub_tx.send(true).await.unwrap();
         cli2.unsubscribe(req_args2.resp_topic.clone())
             .await
             .unwrap();
@@ -268,7 +251,19 @@ async fn request(args: Args, req_args: Request) {
             "Waiting for response for request in resp topic [{}]",
             req_args3.resp_topic
         );
-        sub_rx.recv().await;
+        let resp_msg = resp_rx.recv().await.unwrap();
+        println!(
+            "Received response {}, content {:?},correlation id [{}]",
+            resp_msg.topic(),
+            String::from_utf8(resp_msg.payload().to_owned()).unwrap(),
+            String::from_utf8(
+                resp_msg
+                    .properties()
+                    .get_binary(mqtt::PropertyCode::CorrelationData)
+                    .unwrap()
+            )
+            .unwrap()
+        );
     })
     .await
     .unwrap();
@@ -317,7 +312,7 @@ async fn sub_msgs(args: Args, sub_args: Subscribe) {
     cli.connect(get_connect_opts(args.clone())).await.unwrap();
     println!("Connected...");
     tokio::spawn(async move {
-        let strm = cli.get_stream(10);
+        let strm = cli.get_stream(1000);
         println!("Subscribing to topics {}", sub_args.topic.join(","));
         let _ = cli
             .subscribe_many(sub_args.topic.as_slice(), &[sub_args.qos as i32])
@@ -347,7 +342,7 @@ fn client_from_args(args: Args) -> AsyncClient {
     let create_opt = mqtt::CreateOptionsBuilder::new()
         .server_uri(&args.host)
         .client_id(args.client_id)
-        .max_buffered_messages(100)
+        .max_buffered_messages(1000)
         .mqtt_version(mqtt::MQTT_VERSION_5)
         .finalize();
     mqtt::AsyncClient::new(create_opt).unwrap()
@@ -373,4 +368,15 @@ fn get_connect_opts(args: Args) -> mqtt::ConnectOptions {
         conn_opts.ssl_options(ssl_opts);
     }
     conn_opts.finalize()
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Args::from_args();
+    match args.cmd {
+        Command::Pub(ref pub_args) => pub_msgs(args.clone(), pub_args.clone()).await,
+        Command::Sub(ref sub_args) => sub_msgs(args.clone(), sub_args.clone()).await,
+        Command::Request(ref req_args) => request(args.clone(), req_args.clone()).await,
+        Command::Respond(ref resp_args) => respond(args.clone(), resp_args.clone()).await,
+    }
 }
